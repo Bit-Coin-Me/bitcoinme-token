@@ -57,3 +57,4 @@ coverage.json
 
 # Misc
 .cache/
+arguments.js
