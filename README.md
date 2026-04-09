@@ -1,10 +1,10 @@
-# BitCoinMe Token (BCM)
+# Bịt Coin Mẹ! Token (BCM)
 
 Token ERC20 déployé sur la Binance Smart Chain (BSC) avec gestion multi-propriétaires.
 
 ## 📋 Caractéristiques
 
-- **Nom**: BitCoinMe!
+- **Nom**: Bịt Coin Mẹ!
 - **Symbole**: BCM
 - **Décimales**: 18
 - **Initial Supply**: 6,666,666,666 BCM
@@ -116,7 +116,7 @@ Après le déploiement, les informations sont sauvegardées dans `deployment-inf
   "chainId": 97,
   "timestamp": "2024-...",
   "tokenInfo": {
-    "name": "BitCoinMe!",
+    "name": "Bịt Coin Mẹ!",
     "symbol": "BCM",
     "decimals": "18",
     "initialSupply": "6666666666.0",

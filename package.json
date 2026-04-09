@@ -1,7 +1,7 @@
 {
   "name": "bitcoinme-token",
   "version": "1.0.0",
-  "description": "BitCoinMe Token (BCM) - Déploiement sur BSC Testnet",
+  "description": "Bịt Coin Mẹ! Token (BCM) - Déploiement sur BSC Testnet",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
