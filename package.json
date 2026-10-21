@@ -39,7 +39,7 @@
     "@nomicfoundation/hardhat-ignition-ethers": "0.15.17",
     "solc": "0.8.28",
     "solhint": "6.2.4",
-    "prettier": "2.8.8",
+    "prettier": "3.9.10",
     "@nomicfoundation/hardhat-ignition": "0.15.16",
     "@nomicfoundation/ignition-core": "0.15.15"
   },
