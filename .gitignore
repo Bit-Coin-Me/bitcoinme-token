@@ -27,6 +27,8 @@ typechain-types/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 
 # Deployment info (peut contenir des infos sensibles)
 deployment-info.json
@@ -58,3 +60,7 @@ coverage.json
 # Misc
 .cache/
 arguments.js
+/gasReporterOutput.json
+/slither-report.*
+/reports/
+/ignition/deployments/

@@ -1,360 +1,295 @@
 import { expect } from "chai";
-import { ethers } from "hardhat";
-import { BitCoinMe } from "../typechain-types";
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
+import { ethers, network } from "hardhat";
+import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+import tokenomics from "../config/tokenomics.json";
+import { allocationAmounts, genesisFixture, maximumSupply } from "./helpers/genesis";
 
-describe("BitCoinMe Token", function () {
-  let bcm: BitCoinMe;
-  let owner1: SignerWithAddress;
-  let owner2: SignerWithAddress;
-  let owner3: SignerWithAddress;
-  let user1: SignerWithAddress;
-  let user2: SignerWithAddress;
-
-  const INITIAL_SUPPLY = ethers.parseEther("6666666666");
-  const MAX_SUPPLY = ethers.parseEther("8888888888");
-
-  beforeEach(async function () {
-    [owner1, owner2, owner3, user1, user2] = await ethers.getSigners();
-
-    const BitCoinMe = await ethers.getContractFactory("BitCoinMe");
-    bcm = await BitCoinMe.deploy([owner1.address, owner2.address]);
-    await bcm.waitForDeployment();
+describe("BitCoinMe", function () {
+  it("uses the exact NFC name, symbol and decimals", async function () {
+    const { token } = await loadFixture(genesisFixture);
+    expect(ethers.toUtf8Bytes(await token.name())).to.deep.equal(
+      ethers.toUtf8Bytes(tokenomics.name.normalize("NFC"))
+    );
+    expect(await token.symbol()).to.equal(tokenomics.symbol);
+    expect(await token.decimals()).to.equal(tokenomics.decimals);
+    expect(await token.MAX_SUPPLY()).to.equal(maximumSupply);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Déploiement", function () {
-    it("Devrait définir le nom et le symbole corrects", async function () {
-      expect(await bcm.name()).to.equal("BitCoinMe!");
-      expect(await bcm.symbol()).to.equal("BCM");
+  it("creates the entire supply directly in the final contract recipients", async function () {
+    const { token, recipients, deployer } = await loadFixture(genesisFixture);
+    expect(await token.totalSupply()).to.equal(maximumSupply);
+    expect(await token.balanceOf(deployer.address)).to.equal(0n);
+    for (let i = 0; i < recipients.length; i++) {
+      expect(await token.balanceOf(recipients[i])).to.equal(allocationAmounts[i]);
+      expect(await ethers.provider.getCode(recipients[i])).not.to.equal("0x");
+    }
+    const receipt = await token.deploymentTransaction()!.wait();
+    const transfers = receipt!.logs.map((log) => token.interface.parseLog(log));
+    expect(transfers).to.have.lengthOf(recipients.length);
+    for (let i = 0; i < recipients.length; i++) {
+      expect(transfers[i]!.name).to.equal("Transfer");
+      expect(transfers[i]!.args).to.deep.equal([
+        ethers.ZeroAddress,
+        recipients[i],
+        allocationAmounts[i],
+      ]);
+    }
+  });
+
+  for (const index of [0, 7]) {
+    it("rejects a zero recipient at index " + index, async function () {
+      const { token, factory, recipients } = await loadFixture(genesisFixture);
+      const invalid = [...recipients];
+      invalid[index] = ethers.ZeroAddress;
+      await expect(factory.deploy(invalid))
+        .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+        .withArgs(ethers.ZeroAddress);
     });
+  }
 
-    it("Devrait avoir 18 décimales", async function () {
-      expect(await bcm.decimals()).to.equal(18);
+  it("rejects an EOA recipient", async function () {
+    const { token, factory, recipients, outsider } = await loadFixture(genesisFixture);
+    await expect(factory.deploy([outsider.address, ...recipients.slice(1)]))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+      .withArgs(outsider.address);
+  });
+
+  it("rejects duplicate recipients", async function () {
+    const { token, factory, recipients } = await loadFixture(genesisFixture);
+    const invalid = [...recipients];
+    invalid[7] = recipients[2];
+    await expect(factory.deploy(invalid))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+      .withArgs(recipients[2]);
+  });
+
+  it("rejects the deployer even when the deployer has contract code", async function () {
+    const { token, factory, recipients, holders } = await loadFixture(genesisFixture);
+    await expect(factory.connect(holders[0]).deploy(recipients))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+      .withArgs(recipients[0]);
+  });
+
+  it("rejects its own predicted address as a recipient", async function () {
+    const { token, factory, recipients, deployer } = await loadFixture(genesisFixture);
+    const self = ethers.getCreateAddress({
+      from: deployer.address,
+      nonce: await deployer.getNonce(),
     });
+    await expect(factory.deploy([self, ...recipients.slice(1)]))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+      .withArgs(self);
+  });
 
-    it("Devrait minter l'initial supply au déployeur", async function () {
-      expect(await bcm.totalSupply()).to.equal(INITIAL_SUPPLY);
-      expect(await bcm.balanceOf(owner1.address)).to.equal(INITIAL_SUPPLY);
-    });
+  it("transfers the exact amount and emits Transfer", async function () {
+    const { token, holders, user, recipients } = await loadFixture(genesisFixture);
+    const amount = ethers.parseEther("1000");
+    await expect(token.connect(holders[0]).transfer(user.address, amount))
+      .to.emit(token, "Transfer")
+      .withArgs(recipients[0], user.address, amount);
+    expect(await token.balanceOf(user.address)).to.equal(amount);
+    expect(await token.balanceOf(recipients[0])).to.equal(allocationAmounts[0] - amount);
+    expect(await token.totalSupply()).to.equal(maximumSupply);
+  });
 
-    it("Devrait définir le max supply correct", async function () {
-      expect(await bcm.MAX_SUPPLY()).to.equal(MAX_SUPPLY);
-    });
+  it("supports zero transfers and self transfers", async function () {
+    const { token, holders, user, recipients } = await loadFixture(genesisFixture);
+    await expect(token.connect(user).transfer(recipients[0], 0n))
+      .to.emit(token, "Transfer")
+      .withArgs(user.address, recipients[0], 0n);
+    await token.connect(holders[0]).transfer(recipients[0], allocationAmounts[0]);
+    expect(await token.balanceOf(recipients[0])).to.equal(allocationAmounts[0]);
+    expect(await token.totalSupply()).to.equal(maximumSupply);
+  });
 
-    it("Devrait assigner les rôles aux propriétaires initiaux", async function () {
-      expect(await bcm.isOwner(owner1.address)).to.be.true;
-      expect(await bcm.isOwner(owner2.address)).to.be.true;
+  it("rejects an insufficient balance and the zero receiver with precise errors", async function () {
+    const { token, user, recipients } = await loadFixture(genesisFixture);
+    await expect(token.connect(user).transfer(recipients[0], 1n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance")
+      .withArgs(user.address, 0n, 1n);
+    await expect(token.connect(user).transfer(ethers.ZeroAddress, 0n))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidReceiver")
+      .withArgs(ethers.ZeroAddress);
+  });
 
-      const minterRole = await bcm.MINTER_ROLE();
-      expect(await bcm.hasRole(minterRole, owner1.address)).to.be.true;
-      expect(await bcm.hasRole(minterRole, owner2.address)).to.be.true;
-    });
+  it("emits Approval and spends only the approved allowance", async function () {
+    const { token, holders, user, spender, recipients } = await loadFixture(genesisFixture);
+    await expect(token.connect(holders[0]).approve(spender.address, 100n))
+      .to.emit(token, "Approval")
+      .withArgs(recipients[0], spender.address, 100n);
+    await expect(token.connect(spender).transferFrom(recipients[0], user.address, 40n))
+      .to.emit(token, "Transfer")
+      .withArgs(recipients[0], user.address, 40n);
+    expect(await token.allowance(recipients[0], spender.address)).to.equal(60n);
+    expect(await token.balanceOf(user.address)).to.equal(40n);
+    await expect(token.connect(spender).transferFrom(recipients[0], user.address, 61n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance")
+      .withArgs(spender.address, 60n, 61n);
+  });
 
-    // v2 — le déployeur reçoit ses rôles même s'il n'est pas dans initialOwners
-    it("Devrait assigner les rôles au déployeur même absent de initialOwners", async function () {
-      const BitCoinMe = await ethers.getContractFactory("BitCoinMe");
-      // owner2 déploie, et ne liste que owner3 comme initialOwner
-      const bcm2 = await BitCoinMe.connect(owner2).deploy([owner3.address]);
-      await bcm2.waitForDeployment();
+  it("allows approval replacement and revocation and rejects a zero spender", async function () {
+    const { token, holders, spender, recipients } = await loadFixture(genesisFixture);
+    await token.connect(holders[0]).approve(spender.address, 100n);
+    await token.connect(holders[0]).approve(spender.address, 1n);
+    expect(await token.allowance(recipients[0], spender.address)).to.equal(1n);
+    await token.connect(holders[0]).approve(spender.address, 0n);
+    expect(await token.allowance(recipients[0], spender.address)).to.equal(0n);
+    await expect(token.approve(ethers.ZeroAddress, 1n))
+      .to.be.revertedWithCustomError(token, "ERC20InvalidSpender")
+      .withArgs(ethers.ZeroAddress);
+  });
 
-      // Le déployeur (owner2) doit quand même avoir ses rôles
-      expect(await bcm2.isOwner(owner2.address)).to.be.true;
-      const minterRole = await bcm2.MINTER_ROLE();
-      expect(await bcm2.hasRole(minterRole, owner2.address)).to.be.true;
+  it("preserves infinite allowance for transfers and burns", async function () {
+    const { token, holders, spender, user, recipients } = await loadFixture(genesisFixture);
+    await token.connect(holders[0]).approve(spender.address, ethers.MaxUint256);
+    await token.connect(spender).transferFrom(recipients[0], user.address, 100n);
+    await token.connect(spender).burnFrom(recipients[0], 100n);
+    expect(await token.allowance(recipients[0], spender.address)).to.equal(ethers.MaxUint256);
+  });
 
-      // Et owner3 aussi
-      expect(await bcm2.isOwner(owner3.address)).to.be.true;
+  it("burns only the caller's balance and reduces supply", async function () {
+    const { token, holders, recipients, user } = await loadFixture(genesisFixture);
+    await expect(token.connect(holders[0]).burn(100n))
+      .to.emit(token, "Transfer")
+      .withArgs(recipients[0], ethers.ZeroAddress, 100n);
+    expect(await token.totalSupply()).to.equal(maximumSupply - 100n);
+    expect(await token.balanceOf(recipients[0])).to.equal(allocationAmounts[0] - 100n);
+    await expect(token.connect(user).burn(1n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance")
+      .withArgs(user.address, 0n, 1n);
+    await expect(token.connect(user).burn(0n))
+      .to.emit(token, "Transfer")
+      .withArgs(user.address, ethers.ZeroAddress, 0n);
+  });
 
-      // L'initial supply va bien au déployeur
-      expect(await bcm2.balanceOf(owner2.address)).to.equal(INITIAL_SUPPLY);
-    });
+  it("requires and consumes allowance to burn another holder's tokens", async function () {
+    const { token, holders, recipients, spender } = await loadFixture(genesisFixture);
+    await expect(token.connect(spender).burnFrom(recipients[0], 1n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance")
+      .withArgs(spender.address, 0n, 1n);
+    await token.connect(holders[0]).approve(spender.address, 100n);
+    await expect(token.connect(spender).burnFrom(recipients[0], 40n))
+      .to.emit(token, "Transfer")
+      .withArgs(recipients[0], ethers.ZeroAddress, 40n);
+    expect(await token.allowance(recipients[0], spender.address)).to.equal(60n);
+    expect(await token.totalSupply()).to.equal(maximumSupply - 40n);
+    await expect(token.connect(spender).burnFrom(recipients[0], 61n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance")
+      .withArgs(spender.address, 60n, 61n);
+  });
 
-    it("Devrait rejeter le déploiement sans propriétaires", async function () {
-      const BitCoinMe = await ethers.getContractFactory("BitCoinMe");
-      await expect(BitCoinMe.deploy([])).to.be.revertedWith(
-        "Au moins un proprietaire requis"
+  it("restores allowance when a burn fails for insufficient balance", async function () {
+    const { token, user, spender } = await loadFixture(genesisFixture);
+    await token.connect(user).approve(spender.address, 100n);
+    await expect(token.connect(spender).burnFrom(user.address, 100n))
+      .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance")
+      .withArgs(user.address, 0n, 100n);
+    expect(await token.allowance(user.address, spender.address)).to.equal(100n);
+  });
+
+  it("rejects legacy privileged calls, including after burning", async function () {
+    const { token, deployer, holders, user } = await loadFixture(genesisFixture);
+    const legacy = new ethers.Interface([
+      "function mint(address,uint256)",
+      "function addOwner(address)",
+      "function removeOwner(address)",
+      "function grantRole(bytes32,address)",
+      "function revokeRole(bytes32,address)",
+      "function renounceRole(bytes32,address)",
+    ]);
+    await token.connect(holders[0]).burn(100n);
+    const calls = [
+      legacy.encodeFunctionData("mint", [user.address, 100n]),
+      legacy.encodeFunctionData("addOwner", [user.address]),
+      legacy.encodeFunctionData("removeOwner", [user.address]),
+      ...["grantRole", "revokeRole", "renounceRole"].map((fn) =>
+        legacy.encodeFunctionData(fn, [ethers.ZeroHash, user.address])
+      ),
+    ];
+    for (const signer of [deployer, holders[0], user]) {
+      for (const data of calls) {
+        await expect(signer.sendTransaction({ to: await token.getAddress(), data })).to.be.reverted;
+      }
+    }
+    expect(await token.totalSupply()).to.equal(maximumSupply - 100n);
+  });
+
+  it("rejects native deposits, unknown selectors and value on ERC-20 calls", async function () {
+    const { token, deployer, user } = await loadFixture(genesisFixture);
+    const to = await token.getAddress();
+    await expect(deployer.sendTransaction({ to, value: 1n })).to.be.reverted;
+    await expect(deployer.sendTransaction({ to, data: "0x12345678" })).to.be.reverted;
+    await expect(
+      deployer.sendTransaction({
+        to,
+        value: 1n,
+        data: token.interface.encodeFunctionData("transfer", [user.address, 0n]),
+      })
+    ).to.be.reverted;
+  });
+
+  it("preserves balances and non-increasing supply over 1000 seeded operations", async function () {
+    this.timeout(120000);
+    const { token, holders, user, spender, deployer } = await loadFixture(genesisFixture);
+    const actors = [...holders, user, spender];
+    const addresses = actors.map((actor) => actor.address);
+    const balances = [...allocationAmounts, 0n, 0n];
+    let supply = maximumSupply;
+    let state = 0x00c0ffee;
+    function random(): number {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state;
+    }
+    for (let i = 0; i < 1000; i++) {
+      const from = random() % actors.length;
+      const to = random() % actors.length;
+      const operator = random() % actors.length;
+      const cap =
+        balances[from] < ethers.parseEther("1000") ? balances[from] : ethers.parseEther("1000");
+      const amount = i % 31 === 0 ? 0n : (BigInt(random()) * cap) / 0xffffffffn;
+      const previousSupply = supply;
+      switch (i % 5) {
+        case 0:
+          await token.connect(actors[from]).transfer(addresses[to], amount);
+          balances[from] -= amount;
+          balances[to] += amount;
+          break;
+        case 1:
+          await token.connect(actors[from]).approve(addresses[operator], amount);
+          expect(await token.allowance(addresses[from], addresses[operator])).to.equal(amount);
+          break;
+        case 2:
+          await token.connect(actors[from]).approve(addresses[operator], amount);
+          await token
+            .connect(actors[operator])
+            .transferFrom(addresses[from], addresses[to], amount);
+          balances[from] -= amount;
+          balances[to] += amount;
+          expect(await token.allowance(addresses[from], addresses[operator])).to.equal(0n);
+          break;
+        case 3:
+          await token.connect(actors[from]).burn(amount);
+          balances[from] -= amount;
+          supply -= amount;
+          break;
+        case 4:
+          await token.connect(actors[from]).approve(addresses[operator], amount);
+          await token.connect(actors[operator]).burnFrom(addresses[from], amount);
+          balances[from] -= amount;
+          supply -= amount;
+          expect(await token.allowance(addresses[from], addresses[operator])).to.equal(0n);
+          break;
+      }
+      const actualSupply = await token.totalSupply();
+      expect(actualSupply).to.equal(supply);
+      expect(actualSupply).to.be.at.most(previousSupply);
+      const actualBalances = await Promise.all(
+        addresses.map((address) => token.balanceOf(address))
       );
-    });
-
-    it("Devrait rejeter le déploiement avec adresse zero", async function () {
-      const BitCoinMe = await ethers.getContractFactory("BitCoinMe");
-      await expect(
-        BitCoinMe.deploy([owner1.address, ethers.ZeroAddress])
-      ).to.be.revertedWith("Adresse proprietaire invalide");
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Minting", function () {
-    it("Devrait permettre au propriétaire de minter des tokens", async function () {
-      const mintAmount = ethers.parseEther("1000");
-
-      await expect(bcm.connect(owner1).mint(user1.address, mintAmount))
-        .to.emit(bcm, "TokensMinted")
-        .withArgs(user1.address, mintAmount, owner1.address);
-
-      expect(await bcm.balanceOf(user1.address)).to.equal(mintAmount);
-    });
-
-    it("Devrait permettre à plusieurs propriétaires de minter", async function () {
-      const mintAmount = ethers.parseEther("1000");
-
-      await bcm.connect(owner1).mint(user1.address, mintAmount);
-      await bcm.connect(owner2).mint(user2.address, mintAmount);
-
-      expect(await bcm.balanceOf(user1.address)).to.equal(mintAmount);
-      expect(await bcm.balanceOf(user2.address)).to.equal(mintAmount);
-    });
-
-    it("Devrait rejeter le mint d'un non-propriétaire", async function () {
-      const mintAmount = ethers.parseEther("1000");
-
-      await expect(
-        bcm.connect(user1).mint(user2.address, mintAmount)
-      ).to.be.reverted;
-    });
-
-    it("Devrait rejeter le mint vers l'adresse zero", async function () {
-      const mintAmount = ethers.parseEther("1000");
-
-      await expect(
-        bcm.connect(owner1).mint(ethers.ZeroAddress, mintAmount)
-      ).to.be.revertedWith("Mint vers adresse zero");
-    });
-
-    it("Devrait rejeter le mint au-delà du max supply", async function () {
-      const remainingSupply = await bcm.remainingMintableSupply();
-      const excessAmount = remainingSupply + ethers.parseEther("1");
-
-      await expect(
-        bcm.connect(owner1).mint(user1.address, excessAmount)
-      ).to.be.revertedWith("Depassement du supply maximum");
-    });
-
-    it("Devrait calculer correctement le supply mintable restant", async function () {
-      const mintAmount = ethers.parseEther("1000000");
-      await bcm.connect(owner1).mint(user1.address, mintAmount);
-
-      const expected = MAX_SUPPLY - INITIAL_SUPPLY - mintAmount;
-      expect(await bcm.remainingMintableSupply()).to.equal(expected);
-    });
-
-    it("Devrait permettre de minter exactement jusqu'au max supply", async function () {
-      const remainingSupply = await bcm.remainingMintableSupply();
-
-      await bcm.connect(owner1).mint(user1.address, remainingSupply);
-
-      expect(await bcm.totalSupply()).to.equal(MAX_SUPPLY);
-      expect(await bcm.remainingMintableSupply()).to.equal(0);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Burn", function () {
-    it("Devrait permettre à un détenteur de brûler ses propres tokens", async function () {
-      const burnAmount = ethers.parseEther("1000");
-
-      await expect(bcm.connect(owner1).burn(burnAmount))
-        .to.emit(bcm, "TokensBurned")
-        .withArgs(owner1.address, burnAmount);
-
-      expect(await bcm.balanceOf(owner1.address)).to.equal(
-        INITIAL_SUPPLY - burnAmount
-      );
-    });
-
-    it("Devrait réduire le totalSupply après un burn", async function () {
-      const burnAmount = ethers.parseEther("1000");
-
-      await bcm.connect(owner1).burn(burnAmount);
-
-      expect(await bcm.totalSupply()).to.equal(INITIAL_SUPPLY - burnAmount);
-    });
-
-    it("Devrait libérer de la place sous le MAX_SUPPLY après un burn", async function () {
-      const burnAmount = ethers.parseEther("1000");
-      await bcm.connect(owner1).burn(burnAmount);
-
-      // On peut maintenant minter ce qui avait été brûlé
-      await expect(
-        bcm.connect(owner1).mint(user1.address, burnAmount)
-      ).to.not.be.reverted;
-
-      expect(await bcm.totalSupply()).to.equal(INITIAL_SUPPLY);
-    });
-
-    it("Devrait rejeter le burn si le solde est insuffisant", async function () {
-      const tooMuch = INITIAL_SUPPLY + ethers.parseEther("1");
-
-      await expect(bcm.connect(owner1).burn(tooMuch)).to.be.reverted;
-    });
-
-    it("Devrait permettre à n'importe quel détenteur de brûler ses tokens", async function () {
-      // Transférer des tokens à user1 d'abord
-      const amount = ethers.parseEther("500");
-      await bcm.connect(owner1).transfer(user1.address, amount);
-
-      await expect(bcm.connect(user1).burn(amount))
-        .to.emit(bcm, "TokensBurned")
-        .withArgs(user1.address, amount);
-
-      expect(await bcm.balanceOf(user1.address)).to.equal(0n);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Gestion des propriétaires", function () {
-    it("Devrait permettre d'ajouter un nouveau propriétaire", async function () {
-      await expect(bcm.connect(owner1).addOwner(owner3.address))
-        .to.emit(bcm, "OwnerAdded")
-        .withArgs(owner3.address, owner1.address);
-
-      expect(await bcm.isOwner(owner3.address)).to.be.true;
-
-      const minterRole = await bcm.MINTER_ROLE();
-      expect(await bcm.hasRole(minterRole, owner3.address)).to.be.true;
-    });
-
-    it("Devrait permettre au nouveau propriétaire de minter", async function () {
-      await bcm.connect(owner1).addOwner(owner3.address);
-
-      const mintAmount = ethers.parseEther("1000");
-      await expect(bcm.connect(owner3).mint(user1.address, mintAmount)).to.not
-        .be.reverted;
-    });
-
-    it("Devrait rejeter l'ajout d'un propriétaire par un non-propriétaire", async function () {
-      await expect(bcm.connect(user1).addOwner(owner3.address)).to.be.reverted;
-    });
-
-    it("Devrait rejeter l'ajout de l'adresse zero comme propriétaire", async function () {
-      await expect(
-        bcm.connect(owner1).addOwner(ethers.ZeroAddress)
-      ).to.be.revertedWith("Adresse proprietaire invalide");
-    });
-
-    it("Devrait permettre de retirer un propriétaire (quand il en reste d'autres)", async function () {
-      await expect(bcm.connect(owner1).removeOwner(owner2.address))
-        .to.emit(bcm, "OwnerRemoved")
-        .withArgs(owner2.address, owner1.address);
-
-      expect(await bcm.isOwner(owner2.address)).to.be.false;
-
-      const minterRole = await bcm.MINTER_ROLE();
-      expect(await bcm.hasRole(minterRole, owner2.address)).to.be.false;
-    });
-
-    it("Devrait empêcher un propriétaire retiré de minter", async function () {
-      await bcm.connect(owner1).removeOwner(owner2.address);
-
-      const mintAmount = ethers.parseEther("1000");
-      await expect(
-        bcm.connect(owner2).mint(user1.address, mintAmount)
-      ).to.be.reverted;
-    });
-
-    it("Devrait rejeter le retrait d'un propriétaire par un non-propriétaire", async function () {
-      await expect(
-        bcm.connect(user1).removeOwner(owner2.address)
-      ).to.be.reverted;
-    });
-
-    // v2 — protection du dernier admin
-    it("Devrait rejeter le retrait du dernier administrateur", async function () {
-      // owner1 retire owner2, il ne reste plus qu'owner1
-      await bcm.connect(owner1).removeOwner(owner2.address);
-
-      // Tenter de se retirer soi-même alors qu'on est le dernier admin
-      await expect(
-        bcm.connect(owner1).removeOwner(owner1.address)
-      ).to.be.revertedWith("Impossible de retirer le dernier administrateur");
-
-      // owner1 doit toujours être admin
-      expect(await bcm.isOwner(owner1.address)).to.be.true;
-    });
-
-    // v2 — auto-retrait autorisé seulement s'il reste au moins un autre admin
-    it("Devrait permettre à un propriétaire de se retirer lui-même s'il en reste d'autres", async function () {
-      // owner2 se retire de lui-même (owner1 reste)
-      await bcm.connect(owner2).removeOwner(owner2.address);
-      expect(await bcm.isOwner(owner2.address)).to.be.false;
-
-      // owner1 est toujours là
-      expect(await bcm.isOwner(owner1.address)).to.be.true;
-    });
-
-    it("Devrait permettre de re-ajouter un propriétaire après l'avoir retiré", async function () {
-      await bcm.connect(owner1).removeOwner(owner2.address);
-      expect(await bcm.isOwner(owner2.address)).to.be.false;
-
-      await bcm.connect(owner1).addOwner(owner2.address);
-      expect(await bcm.isOwner(owner2.address)).to.be.true;
-
-      const minterRole = await bcm.MINTER_ROLE();
-      expect(await bcm.hasRole(minterRole, owner2.address)).to.be.true;
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Transferts ERC20", function () {
-    it("Devrait permettre les transferts de tokens", async function () {
-      const transferAmount = ethers.parseEther("1000");
-
-      await bcm.connect(owner1).transfer(user1.address, transferAmount);
-
-      expect(await bcm.balanceOf(user1.address)).to.equal(transferAmount);
-    });
-
-    it("Devrait permettre les transferts avec allowance", async function () {
-      const amount = ethers.parseEther("1000");
-
-      await bcm.connect(owner1).approve(user1.address, amount);
-      await bcm
-        .connect(user1)
-        .transferFrom(owner1.address, user2.address, amount);
-
-      expect(await bcm.balanceOf(user2.address)).to.equal(amount);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  describe("Transparence", function () {
-    it("Devrait émettre des events pour tous les mints", async function () {
-      const mintAmount = ethers.parseEther("1000");
-
-      await expect(bcm.connect(owner1).mint(user1.address, mintAmount))
-        .to.emit(bcm, "TokensMinted")
-        .withArgs(user1.address, mintAmount, owner1.address);
-    });
-
-    it("Devrait émettre des events pour tous les burns", async function () {
-      const burnAmount = ethers.parseEther("1000");
-
-      await expect(bcm.connect(owner1).burn(burnAmount))
-        .to.emit(bcm, "TokensBurned")
-        .withArgs(owner1.address, burnAmount);
-    });
-
-    it("Devrait émettre des events pour l'ajout de propriétaires", async function () {
-      await expect(bcm.connect(owner1).addOwner(owner3.address))
-        .to.emit(bcm, "OwnerAdded")
-        .withArgs(owner3.address, owner1.address);
-    });
-
-    it("Devrait émettre des events pour le retrait de propriétaires", async function () {
-      await expect(bcm.connect(owner1).removeOwner(owner2.address))
-        .to.emit(bcm, "OwnerRemoved")
-        .withArgs(owner2.address, owner1.address);
-    });
-
-    it("Devrait permettre de vérifier les rôles publiquement", async function () {
-      const isOwner = await bcm.isOwner(owner1.address);
-      const minterRole = await bcm.MINTER_ROLE();
-      const hasMinterRole = await bcm.hasRole(minterRole, owner1.address);
-
-      expect(isOwner).to.be.true;
-      expect(hasMinterRole).to.be.true;
-    });
+      expect(actualBalances).to.deep.equal(balances);
+      expect(actualBalances.reduce((sum, balance) => sum + balance, 0n)).to.equal(actualSupply);
+      expect(await token.balanceOf(deployer.address)).to.equal(0n);
+    }
+    expect(supply).to.be.lessThan(maximumSupply);
   });
 });

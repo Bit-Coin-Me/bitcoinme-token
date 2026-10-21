@@ -1,11 +1,11 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 import "@nomicfoundation/hardhat-verify";
-import * as dotenv from "dotenv";
-
-dotenv.config();
+import "@nomicfoundation/hardhat-ignition-ethers";
+import "./scripts/compiler";
 
 const config: HardhatUserConfig = {
+  defaultNetwork: "hardhat",
   solidity: {
     version: "0.8.28",
     settings: {
@@ -17,17 +17,12 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
+    hardhat: { chainId: 31337 },
     bscTestnet: {
       url: process.env.BSC_TESTNET_RPC_URL || "https://data-seed-prebsc-1-s1.binance.org:8545",
       chainId: 97,
       accounts: process.env.PRIVATE_KEY !== undefined ? [process.env.PRIVATE_KEY] : [],
       gasPrice: 10000000000, // 10 gwei
-    },
-    bscMainnet: {
-      url: process.env.BSC_MAINNET_RPC_URL || "https://bsc-dataseed.binance.org",
-      chainId: 56,
-      accounts: process.env.PRIVATE_KEY !== undefined ? [process.env.PRIVATE_KEY] : [],
-      gasPrice: 3000000000, // 3 gwei
     },
   },
   etherscan: {
@@ -38,18 +33,10 @@ const config: HardhatUserConfig = {
         chainId: 97,
         urls: {
           apiURL: "https://api.etherscan.io/v2/api?chainid=97",
-          browserURL: "https://testnet.bscscan.com"
-        }
+          browserURL: "https://testnet.bscscan.com",
+        },
       },
-      {
-        network: "bscMainnet",
-        chainId: 56,
-        urls: {
-          apiURL: "https://api.etherscan.io/v2/api?chainid=56",
-          browserURL: "https://bscscan.com"
-        }
-      }
-    ]
+    ],
   },
   paths: {
     sources: "./contracts",
@@ -58,7 +45,7 @@ const config: HardhatUserConfig = {
     artifacts: "./artifacts",
   },
   sourcify: {
-    enabled: true
+    enabled: true,
   },
 };
 

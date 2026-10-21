@@ -1,0 +1,48 @@
+name: Token checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      HARDHAT_DISABLE_TELEMETRY_PROMPT: "true"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install pinned package manager
+        run: npm install --global pnpm@11.8.0 --ignore-scripts
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm check:tokenomics
+      - run: pnpm compile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm lint
+      - run: pnpm coverage
+      - name: Rebuild without coverage instrumentation
+        run: pnpm exec hardhat compile --force
+      - run: pnpm check:forbidden
+      - run: pnpm hash:bytecode
+      - name: Static analysis
+        run: |
+          python3 -m venv /tmp/slither-venv
+          /tmp/slither-venv/bin/pip install slither-analyzer==0.11.5
+          /tmp/slither-venv/bin/slither . --hardhat-ignore-compile --filter-paths node_modules --fail-medium
+      - name: Dependency advisories
+        run: pnpm audit --audit-level=low
+      - name: Secret scan
+        if: ${{ !cancelled() }}
+        run: go run github.com/zricethezav/gitleaks/v8@v8.24.3 git --redact --exit-code 1

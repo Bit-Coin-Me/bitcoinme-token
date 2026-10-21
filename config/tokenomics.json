@@ -1,0 +1,43 @@
+{
+  "name": "Bịt Coin Mẹ!",
+  "symbol": "BCM",
+  "decimals": 18,
+  "supplyModel": "A",
+  "maxSupply": "8888888888",
+  "initiallyAvailable": "6666666666",
+  "initiallyLocked": "2222222222",
+  "allocations": [
+    {
+      "id": "founder",
+      "amount": "444444444"
+    },
+    {
+      "id": "team1",
+      "amount": "311111111"
+    },
+    {
+      "id": "team2",
+      "amount": "311111111"
+    },
+    {
+      "id": "team3",
+      "amount": "311111111"
+    },
+    {
+      "id": "team4",
+      "amount": "311111111"
+    },
+    {
+      "id": "community",
+      "amount": "355555556"
+    },
+    {
+      "id": "liquidity",
+      "amount": "355555556"
+    },
+    {
+      "id": "treasury",
+      "amount": "6488888888"
+    }
+  ]
+}

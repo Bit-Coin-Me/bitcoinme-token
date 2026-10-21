@@ -1,0 +1,9 @@
+{
+  "status": "pending-maintainer-decisions",
+  "decisions": {
+    "supplyModel": null,
+    "locks": null,
+    "safePolicy": null
+  },
+  "recipients": null
+}

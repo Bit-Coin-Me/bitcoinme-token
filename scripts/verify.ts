@@ -1,47 +1,38 @@
-import { run } from "hardhat";
-import * as fs from "fs";
+import { ethers, run } from "hardhat";
+import { readFileSync } from "node:fs";
+import { assertTestnet } from "./lib/network";
+import { isAddress } from "ethers";
 
-async function main() {
-  console.log("🔍 Vérification du contrat sur BscScan...\n");
-
-  // Charger les informations de déploiement
-  if (!fs.existsSync("deployment-info.json")) {
-    console.error("❌ Fichier deployment-info.json introuvable!");
-    console.error("Veuillez d'abord déployer le contrat avec: npm run deploy:testnet");
-    process.exit(1);
+async function main(): Promise<void> {
+  const { chainId } = await ethers.provider.getNetwork();
+  assertTestnet(chainId);
+  const file = process.env.BCM_DEPLOYMENT;
+  if (!file) throw new Error("BCM_DEPLOYMENT must identify the reviewed deployment manifest");
+  const manifest = JSON.parse(readFileSync(file, "utf8"));
+  if (
+    manifest.chainId !== Number(chainId) ||
+    !isAddress(manifest.contractAddress) ||
+    !Array.isArray(manifest.recipients) ||
+    manifest.recipients.length !== 8 ||
+    !manifest.recipients.every(
+      (address: unknown) => typeof address === "string" && isAddress(address)
+    )
+  ) {
+    throw new Error("Invalid deployment manifest or chain ID");
   }
-
-  const deploymentInfo = JSON.parse(fs.readFileSync("deployment-info.json", "utf8"));
-  const { contractAddress, initialOwners } = deploymentInfo;
-
-  console.log("📍 Adresse du contrat:", contractAddress);
-  console.log("👥 Propriétaires initiaux:", initialOwners);
-  console.log();
-
-  try {
-    console.log("⏳ Vérification en cours...");
-    
-    await run("verify:verify", {
-      address: contractAddress,
-      constructorArguments: [initialOwners],
-    });
-
-    console.log("✅ Contrat vérifié avec succès sur BscScan!");
-    console.log(`🔗 Voir sur BscScan: https://testnet.bscscan.com/address/${contractAddress}`);
-  } catch (error: any) {
-    if (error.message.includes("Already Verified")) {
-      console.log("ℹ️  Le contrat est déjà vérifié sur BscScan");
-      console.log(`🔗 Voir sur BscScan: https://testnet.bscscan.com/address/${contractAddress}`);
-    } else {
-      console.error("❌ Erreur lors de la vérification:", error);
-      process.exit(1);
-    }
+  if ((await ethers.provider.getCode(manifest.contractAddress)) === "0x") {
+    throw new Error("No contract at the manifest address on the selected network");
   }
+  await run("verify:verify", {
+    address: manifest.contractAddress,
+    constructorArguments: [manifest.recipients],
+  });
+  console.log(
+    "Explorer verification completed; source verification alone does not validate the launch claims"
+  );
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error("❌ Erreur:", error);
-    process.exit(1);
-  });
+main().catch((error: Error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
